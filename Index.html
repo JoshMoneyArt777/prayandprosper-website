@@ -1,0 +1,393 @@
+Index.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JOSH: Original & Superior Hue | Art Commission & Financial Log</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f7f7f7; }
+        .log-table { @apply w-full border-collapse text-left; }
+        .log-table th, .log-table td { @apply p-3 border-b border-gray-200; }
+        .log-table th { @apply bg-gray-50 text-xs font-semibold uppercase tracking-wider text-gray-600; }
+        .page { display: none; } /* Hide pages by default */
+        .page.active { display: block; } /* Show active page */
+    </style>
+</head>
+<body class="min-h-screen bg-gray-50 flex flex-col">
+
+    <!-- Firebase Imports and Initialization & ALL Client-side Scripts -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth, userId = null;
+        let isAdminLoggedIn = false;
+
+        // --- Data Definitions ---
+
+        // Financial Data (Unchanged)
+        const initialPaymentsReceived = [
+            { id: '1', date: '2024-10-05', client: 'Project Alpha Co.', description: 'Digital Concept Art Commission', amount: 2500.00 },
+            { id: '2', date: '2024-10-12', client: 'Beta Design Group', description: 'Large-scale Oil Painting Acquisition', amount: 1800.00 },
+            { id: '3', date: '2024-10-20', client: 'Gamma Studios', description: 'Licensing Fee for Exclusive Use', amount: 1500.00 },
+            { id: '4', date: '2024-10-28', client: 'Delta Private Collector', description: 'Custom Portraiture (Final Payment)', amount: 953.89 },
+        ];
+        const initialCostsPaid = [
+            { id: '5', date: '2024-10-03', description: 'Bulk order of premium canvases & paint', category: 'Materials/Supplies', amount: 4500.00 },
+            { id: '6', date: '2024-10-10', description: 'Freelance 3D modeler for concept render', category: 'Contractor Fees', amount: 686.60 },
+            { id: '7', date: '2024-10-15', description: 'Studio electricity, water, and heating', category: 'Utilities', amount: 885.11 },
+            { id: '8', date: '2024-10-22', description: 'Adobe Creative Cloud annual subscription', category: 'Software/Fees', amount: 248.55 },
+            { id: '9', date: '2024-10-26', description: 'Insured shipping for Gamma Studios', category: 'Courier/Shipping', amount: 68.03 },
+        ];
+        
+        // Portfolio Data (NEW)
+        const initialPortfolioItems = [
+            { id: 'p1', type: 'Colored Pen Sketch', description: 'Intricate detail, vibrant alcohol-based markers.', price: 150.00 },
+            { id: 'p2', type: 'Graphite Pencil Portrait', description: 'High-contrast black and white realism, archival paper.', price: 250.00 },
+            { id: 'p3', type: 'Fine Line Ink Drawing', description: 'Precision pen work on cold-press watercolor paper.', price: 120.00 },
+            { id: 'p4', type: 'Handmade Beaded Artwork', description: 'Detailed, woven beadwork on canvas backing.', price: 550.00 },
+        ];
+
+
+        // --- Firebase/Data Functions ---
+
+        // Function to initialize Firebase and sign in
+        window.initializeFirebase = async () => {
+            try {
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        // Update userId display if admin page is active
+                        const userIdEl = document.getElementById('current-user-id');
+                        if (userIdEl) userIdEl.textContent = userId;
+                        
+                        // If admin is logged in, reload data
+                        if (isAdminLoggedIn) {
+                            loadLogBook();
+                            loadPortfolioAdmin();
+                        }
+                    } else {
+                        userId = crypto.randomUUID();
+                    }
+                    loadPortfolioItems(); // Load public portfolio immediately
+                });
+
+            } catch (error) {
+                console.error("Firebase initialization or authentication failed:", error);
+                document.getElementById('message-box-text').textContent = 'Error: Could not connect to the database.';
+                document.getElementById('message-box').classList.remove('hidden');
+            }
+        };
+
+        // Helper function for Firestore path (Private access is used)
+        const getCollectionPath = (collectionName) => {
+            if (!userId) {
+                console.warn('User ID not available, data might not persist correctly.');
+            }
+            // Use the user's ID for segregation
+            const uid = userId || 'anonymous';
+            return collection(db, `artifacts/${appId}/users/${uid}/${collectionName}`);
+        };
+
+        // Function to seed initial data if collections are empty
+        const seedData = async (collectionName, initialData) => {
+            const collectionRef = getCollectionPath(collectionName);
+            const docRef = doc(collectionRef, 'master_data');
+            const docSnap = await getDoc(docRef);
+
+            if (!docSnap.exists() || !docSnap.data().records || docSnap.data().records.length === 0) {
+                await setDoc(docRef, { records: initialData, lastUpdated: new Date() });
+                console.log(`Seeded initial data for ${collectionName}`);
+            }
+        };
+
+
+        // --- FINANCIAL LOGIC ---
+
+        // Main function to load and listen to log book data (Financial)
+        window.loadLogBook = () => {
+            if (!db || !userId) return;
+
+            const renderLog = (collectionName, records, tableId, totalElementId) => {
+                const tableBody = document.getElementById(tableId);
+                const totalEl = document.getElementById(totalElementId);
+                if (!tableBody || !totalEl) return;
+
+                tableBody.innerHTML = '';
+                let total = 0;
+
+                records.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+                records.forEach(record => {
+                    const row = tableBody.insertRow();
+                    row.insertCell().textContent = record.date;
+                    row.insertCell().textContent = record.description;
+                    if (record.category) {
+                        row.insertCell().textContent = record.category;
+                    }
+                    row.insertCell().textContent = '$' + record.amount.toFixed(2);
+                    row.insertCell().innerHTML = `<button onclick="editLogRecord('${record.id}', '${collectionName}', ${JSON.stringify(record).replace(/"/g, '&quot;')})" 
+                                                      class="text-blue-600 hover:text-blue-800 font-medium">Edit</button>`;
+                    total += record.amount;
+                });
+                totalEl.textContent = '$' + total.toFixed(2);
+
+                const totalRevenue = parseFloat(document.getElementById('total-revenue').textContent.replace('$', '').replace(',', ''));
+                const totalCost = parseFloat(document.getElementById('total-cost').textContent.replace('$', '').replace(',', ''));
+                document.getElementById('net-profit').textContent = '$' + (totalRevenue - totalCost).toFixed(2);
+            };
+
+            // 1. Payments Received Listener
+            const receivedRef = doc(getCollectionPath('payments_received'), 'master_data');
+            onSnapshot(receivedRef, async (docSnap) => {
+                if (!docSnap.exists()) {
+                    await seedData('payments_received', initialPaymentsReceived);
+                    return;
+                }
+                renderLog('payments_received', docSnap.data().records, 'received-body', 'total-revenue');
+            }, (error) => {
+                console.error("Error listening to received payments:", error);
+            });
+
+            // 2. Costs Paid Listener
+            const costsRef = doc(getCollectionPath('costs_paid'), 'master_data');
+            onSnapshot(costsRef, async (docSnap) => {
+                if (!docSnap.exists()) {
+                    await seedData('costs_paid', initialCostsPaid);
+                    return;
+                }
+                renderLog('costs_paid', docSnap.data().records, 'costs-body', 'total-cost');
+            }, (error) => {
+                console.error("Error listening to costs paid:", error);
+            });
+        };
+
+        // Log Record editing function
+        window.editLogRecord = (id, collectionName, recordJson) => {
+            const record = JSON.parse(recordJson);
+            
+            document.getElementById('edit-id').value = id;
+            document.getElementById('edit-collection').value = collectionName;
+            document.getElementById('edit-date').value = record.date;
+            document.getElementById('edit-description').value = record.description || '';
+            document.getElementById('edit-amount').value = record.amount;
+            
+            const categoryField = document.getElementById('edit-category-group');
+            if (collectionName === 'costs_paid') {
+                categoryField.classList.remove('hidden');
+                document.getElementById('edit-category').value = record.category || '';
+            } else {
+                categoryField.classList.add('hidden');
+            }
+
+            document.getElementById('edit-modal').classList.remove('hidden');
+            showTutorial('edit-click');
+        };
+
+        window.saveLogRecord = async (event) => {
+            event.preventDefault();
+            
+            const id = document.getElementById('edit-id').value;
+            const collectionName = document.getElementById('edit-collection').value;
+            const date = document.getElementById('edit-date').value;
+            const description = document.getElementById('edit-description').value;
+            const amount = parseFloat(document.getElementById('edit-amount').value);
+            const category = document.getElementById('edit-category').value;
+            
+            if (isNaN(amount) || amount <= 0) {
+                document.getElementById('modal-message').textContent = 'Please enter a valid amount.';
+                return;
+            }
+
+            try {
+                const collectionRef = getCollectionPath(collectionName);
+                const docRef = doc(collectionRef, 'master_data');
+                const docSnap = await getDoc(docRef);
+
+                if (docSnap.exists()) {
+                    let records = docSnap.data().records;
+                    let recordIndex = records.findIndex(r => r.id === id);
+
+                    if (recordIndex !== -1) {
+                        const updatedRecord = { id, date, description, amount };
+                        if (collectionName === 'costs_paid') updatedRecord.category = category;
+                        records[recordIndex] = updatedRecord;
+
+                        await updateDoc(docRef, { records: records, lastUpdated: new Date() });
+                        document.getElementById('modal-message').textContent = 'Record updated successfully!';
+                        setTimeout(() => window.closeEditModal(), 1500);
+                    } else {
+                        document.getElementById('modal-message').textContent = 'Error: Record not found.';
+                    }
+                }
+            } catch (error) {
+                console.error("Error saving log record:", error);
+                document.getElementById('modal-message').textContent = 'Error saving to database. See console.';
+            }
+        };
+
+        window.closeEditModal = () => {
+            document.getElementById('edit-modal').classList.add('hidden');
+            document.getElementById('modal-message').textContent = '';
+        };
+
+        // --- PORTFOLIO LOGIC ---
+
+        // Public function to load and render portfolio items
+        window.loadPortfolioItems = () => {
+            if (!db) return;
+            const portfolioRef = doc(getCollectionPath('portfolio_items'), 'master_data');
+
+            onSnapshot(portfolioRef, async (docSnap) => {
+                let items = [];
+                if (!docSnap.exists()) {
+                    await seedData('portfolio_items', initialPortfolioItems);
+                    return; // Will fire again after seeding
+                }
+                items = docSnap.data().records || [];
+                renderPortfolio(items);
+            }, (error) => {
+                console.error("Error listening to portfolio items:", error);
+            });
+        };
+
+        // Admin function to load and render portfolio items with edit buttons
+        window.loadPortfolioAdmin = () => {
+            if (!db || !userId) return;
+            const portfolioRef = doc(getCollectionPath('portfolio_items'), 'master_data');
+            
+            onSnapshot(portfolioRef, async (docSnap) => {
+                let items = [];
+                if (!docSnap.exists()) {
+                    // Seed data if missing
+                    await seedData('portfolio_items', initialPortfolioItems);
+                    return;
+                }
+                items = docSnap.data().records || [];
+                renderPortfolioAdmin(items);
+            }, (error) => {
+                console.error("Error listening to admin portfolio:", error);
+            });
+        }
+
+        // Renders portfolio cards for the public page
+        const renderPortfolio = (items) => {
+            const container = document.getElementById('portfolio-cards-container');
+            if (!container) return;
+            container.innerHTML = '';
+
+            items.forEach(item => {
+                container.innerHTML += `
+                    <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-indigo-500">
+                        <div class="flex items-center space-x-3 mb-3">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-indigo-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5l-2.4 2.4a.5.5 0 0 1-.2.1L6 14.5a1 1 0 0 0-.4.8L4 20l5.7-.7a1 1 0 0 0 .8-.4l8-8a.5.5 0 0 0 .1-.2l2.4-2.4a.5.5 0 0 0 0-.7l-2.8-2.8a.5.5 0 0 0-.7 0z"/></svg>
+                            <h4 class="text-xl font-bold text-gray-900">${item.type}</h4>
+                        </div>
+                        <p class="text-gray-600 mb-4">${item.description}</p>
+                        <p class="text-3xl font-extrabold text-indigo-600">$${item.price.toFixed(2)}</p>
+                        <p class="text-sm text-gray-400 mt-1">Starting Price</p>
+                    </div>
+                `;
+            });
+        };
+
+        // Renders portfolio table for the Admin editing page
+        const renderPortfolioAdmin = (items) => {
+            const tableBody = document.getElementById('admin-portfolio-body');
+            if (!tableBody) return;
+            tableBody.innerHTML = '';
+
+            items.forEach(item => {
+                const row = tableBody.insertRow();
+                row.insertCell().textContent = item.type;
+                row.insertCell().textContent = item.description;
+                row.insertCell().textContent = '$' + item.price.toFixed(2);
+                row.insertCell().innerHTML = `<button onclick="editPortfolioItem('${item.id}', ${JSON.stringify(item).replace(/"/g, '&quot;')})" 
+                                                  class="text-green-600 hover:text-green-800 font-medium">Edit Price</button>`;
+            });
+        };
+
+        // Portfolio Item editing function
+        window.editPortfolioItem = (id, itemJson) => {
+            const item = JSON.parse(itemJson);
+            
+            document.getElementById('p-edit-id').value = id;
+            document.getElementById('p-edit-type').value = item.type;
+            document.getElementById('p-edit-description').value = item.description;
+            document.getElementById('p-edit-price').value = item.price;
+            
+            document.getElementById('portfolio-edit-modal').classList.remove('hidden');
+        };
+
+        window.savePortfolioItem = async (event) => {
+            event.preventDefault();
+            
+            const id = document.getElementById('p-edit-id').value;
+            const type = document.getElementById('p-edit-type').value;
+            const description = document.getElementById('p-edit-description').value;
+            const price = parseFloat(document.getElementById('p-edit-price').value);
+            
+            if (isNaN(price) || price <= 0) {
+                document.getElementById('p-modal-message').textContent = 'Please enter a valid price.';
+                return;
+            }
+
+            try {
+                const collectionName = 'portfolio_items';
+                const collectionRef = getCollectionPath(collectionName);
+                const docRef = doc(collectionRef, 'master_data');
+                const docSnap = await getDoc(docRef);
+
+                if (docSnap.exists()) {
+                    let records = docSnap.data().records;
+                    let recordIndex = records.findIndex(r => r.id === id);
+
+                    if (recordIndex !== -1) {
+                        // Update only the mutable fields
+                        records[recordIndex] = { id, type, description, price };
+
+                        await updateDoc(docRef, { records: records, lastUpdated: new Date() });
+                        document.getElementById('p-modal-message').textContent = 'Portfolio item updated successfully!';
+                        setTimeout(() => window.closePortfolioEditModal(), 1500);
+                    } else {
+                        document.getElementById('p-modal-message').textContent = 'Error: Record not found.';
+                    }
+                }
+            } catch (error) {
+                console.error("Error saving portfolio item:", error);
+                document.getElementById('p-modal-message').textContent = 'Error saving to database. See console.';
+            }
+        };
+
+        window.closePortfolioEditModal = () => {
+            document.getElementById('portfolio-edit-modal').classList.add('hidden');
+            document.getElementById('p-modal-message').textContent = '';
+        };
+        
+        
+        // --- UI/NAVIGATION/TUTORIAL FUNCTIONS ---
+
+        // Main Navigation Logic
+        window.navigateTo = (pageId) => {
+            document.querySelectorAll('.page').forEa
